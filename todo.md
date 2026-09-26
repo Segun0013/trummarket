@@ -1,0 +1,105 @@
+# Project TODO
+
+- [x] Model wallet accounts and transactions in the database, with every record scoped to a Telegram user ID.
+- [x] Add secure server-side transaction, summary, history, and dashboard analytics procedures.
+- [x] Verify Telegram WebApp init data server-side before identifying a Telegram user.
+- [x] Create an elegant responsive HTML WebApp dashboard with exactly four summary cards: Current Balance, Monthly Income, Monthly Expenses, and Savings Rate.
+- [x] Add revenue and expense forms with amount, category, optional description, and optimistic UI updates.
+- [x] Add transaction history with income/expense and date-range filters.
+- [x] Add income-versus-expense and spending-by-category charts.
+- [x] Build Telegram webhook handling for /start, /balance, /add_income, and /add_expense exactly as specified.
+- [x] Add the Telegram WebApp button to the bot onboarding flow.
+- [x] Configure bot token as a server-side secret and document the one-time setup needed after deployment.
+- [x] Write Vitest coverage for monetary summary logic, transaction input validation, and Telegram command parsing.
+- [x] Verify responsive dashboard rendering, TypeScript checks, and test suite before delivery.
+- [x] Export the completed source code to the user's GitHub repository.
+- [x] Set and validate the final public HTTPS URL for the Telegram WebApp after deployment.
+- [x] Implement optimistic wallet transaction updates with cache rollback on failure.
+- [x] Add router-level validation tests for wallet transaction inputs.
+- [x] Verify the populated Telegram dashboard on desktop and mobile through a secure test harness.
+- [x] Run the full test suite after a valid public TELEGRAM_WEBAPP_URL has been set.
+- [x] Commit the completed wallet implementation and push the latest code to GitHub.
+- [x] Verify that the GitHub repository contains the wallet code, migrations, tests, documentation, and task list.
+- [x] Verify the migration and Vitest files in the GitHub repository before the final handoff.
+- [x] Verify every pushed Drizzle migration and Vitest file in the GitHub branch before final handoff.
+- [x] Configure the published walletbot-mqqmoq7k.manus.space URL for the Telegram WebApp and re-register the protected webhook.
+- [x] Generate and provide a Telegram-compatible webhook secret for the user to copy into the project settings.
+- [x] Verify that the /start WebApp button resolves to the published walletbot-mqqmoq7k.manus.space address.
+- [x] Add a per-user Russian or English language preference to the wallet profile.
+- [x] Show bilingual welcome content before onboarding and language buttons after /start.
+- [x] Localize Telegram bot command replies, error messages, prompts, and WebApp button text.
+- [x] Localize the WebApp dashboard, transaction forms, filters, and empty states based on the selected language.
+- [x] Add a thoughtful personalized visual detail to the localized wallet experience.
+- [x] Add Vitest coverage for language selection, persistence, and translated bot messages.
+- [x] Verify both language flows in Telegram and the WebApp, then publish the update.
+- [x] Localize Telegram webhook error responses using the selected user language.
+- [x] Add unit tests for stored language settings and localized bot reply content in both languages.
+- [x] Resolve the persisted language before early webhook failures and test Russian and English fallback errors.
+- [x] Test persisted-language fallback for early command and callback-query failures in Russian and English.
+- [x] Push the published bilingual onboarding and localization update to the GitHub repository.
+- [x] Verify that all bilingual implementation files are committed and present in the GitHub main branch.
+- [x] Inspect Telegram webhook status, production request logs, and bot response timing for the reported delays.
+- [x] Fix the verified cause of delayed or missing Telegram bot responses.
+- [x] Add a regression test for prompt webhook acknowledgement and verify the deployed bot responds reliably.
+- [x] Trace the published callback-query request for the Russian language button and identify why it receives no response.
+- [x] Fix the language-button callback flow and acknowledge it immediately in Telegram.
+- [x] Validate the repaired Russian and English selection buttons against the deployed webhook.
+- [x] Push the callback-query reliability fix to the GitHub repository.
+- [x] Diagnose and mitigate published webhook latency and HTTP 503 behaviour, then re-measure command and callback response times.
+- [x] Add a regression test proving that language callbacks are acknowledged before locale persistence and error follow-up.
+- [x] Add a failure-path regression test confirming callback acknowledgement precedes locale persistence failure and localized error delivery.
+- [x] Restart the development service and confirm the obsolete locale-import runtime error is gone.
+- [x] Re-validate Russian and English buttons through the published Telegram webhook after the latency mitigation.
+- [x] Profile the 2–3 second callback flow and identify avoidable Telegram API round trips.
+- [x] Optimize language selection by returning the immediate acknowledgement directly from the webhook; deliver the full welcome separately because the WebApp button requires a normal Telegram message.
+- [x] Benchmark the published callback path after optimization and confirm a faster response with the user.
+- [x] Obtain explicit end-to-end confirmation that both Russian and English buttons work in the live Telegram chat after the optimization.
+- [x] Record the measured public-domain ingress latency separately from application processing and observe whether any new Telegram HTTP 503 error occurs.
+- [x] Obtain an explicit live check of one published command response after the callback optimization.
+- [x] Audit the current schema, API and Telegram flows; document a backward-compatible migration and rollback path.
+- [x] Complete account-scoped data, memberships, system and custom categories, idempotency protection, soft deletion and a unified transaction service.
+- [x] Complete validated tRPC and Telegram handlers, including regression coverage for secure preview callbacks.
+- [x] Rebuild the Mini App as a polished Telegram-aware mobile shell with Home, Records, Categories, Settings and Insights; omit monetization by design for this stage.
+- [x] Complete transaction search, period/category filters, grouping, edit/delete/undo and category archive/merge workflows.
+- [x] Complete free-text transaction recognition with deterministic amount extraction, validated structured AI categorization and Telegram confirmation.
+- [x] Support voice and receipt inputs with temporary media lifecycle, preview confirmation and graceful fallback to manual entry.
+- [x] Add account-aware analytics, timezone-safe periods, daily reports and user-managed reminder schedules.
+- [x] Add multiple accounts, shared budgets, roles and expiring Telegram deep-link invitations.
+- [x] Finalize expanded bot commands, privacy/security controls, observability, tests, deployment and GitHub synchronization; defer payment and PRO monetization.
+- [x] Implement membership-aware account resolution so operations and reads can safely target an owned or shared account.
+- [x] Add transaction soft-delete and restore/undo operations, including hidden deleted records.
+- [x] Add regression coverage for membership isolation, soft deletion and idempotent duplicate writes.
+- [x] Add an explicit category filter to the Records view and combine it with existing kind, date and search filters.
+- [x] Group Records by day or month with accessible headings rather than rendering one flat list.
+- [x] Add regression coverage for category filtering and grouped record behaviour.
+- [x] Ensure client regression tests are included in the mandatory Vitest suite before final verification.
+- [x] Add Telegram webhook regression tests for free-text preview, confirm and cancel callbacks in Russian and English.
+- [x] Add isolated successful-AI and malformed-AI-output tests proving structured results are validated before a preview exists.
+- [x] Add English confirmation and Russian cancellation callback tests, plus localized failure paths for both locales.
+- [x] Add Russian and English failure-path tests for draft cancellation callbacks.
+- [x] Add isolated voice and receipt parsing tests, including malformed extraction and manual-entry fallback.
+- [x] Add Telegram webhook regression tests for a voice draft and a receipt draft without persisting raw media.
+- [x] Add explicit malformed receipt-extraction and manual-entry fallback tests for voice and receipt inputs.
+- [x] Add Mini App receipt-photo upload that produces the same confirmation-only draft without retaining the image.
+- [x] Add timezone, user reminder preferences, report preferences and an idempotent scheduled-delivery ledger through a safe database migration.
+- [x] Add account-scoped analytics for week, month, year and custom UTC periods, including trend and budget-status data.
+- [x] Add a bilingual Mini App analytics view with period selection, trend visualization and budget-status panel.
+- [x] Add Mini App controls for daily reminders, summary frequency, delivery hour and IANA timezone.
+- [x] Add a project-owned, per-user-configurable Heartbeat lifecycle for reminder schedules and an idempotent `/api/scheduled/wallet-reminder` handler; Telegram WebApp identity cannot provide a Manus OAuth user session.
+- [x] Add a project-owned Heartbeat lifecycle for periodic reports and an idempotent `/api/scheduled/wallet-report` handler.
+- [x] Add server regression coverage for timezone conversion, analytics ranges, report/reminder idempotency and schedule-setting validation.
+- [x] Deploy the scheduled handlers and verify both protected production routes; user-specific report and reminder jobs must be created only when each user enables a schedule, so no unsolicited global report cron is registered.
+- [x] Verify the production scheduled-handler authorization boundary and document the on-demand per-user cron-registration model after deployment.
+- [x] Add expiring, single-use shared-wallet invitation records with opaque tokens and safe migration coverage.
+- [x] Add owner/admin-only creation and revocation of shared-wallet invitations plus role-aware member management.
+- [x] Add Telegram `/start invite_TOKEN` acceptance that never trusts account identifiers from the deep link and always checks invitation state.
+- [x] Add Mini App shared-account creation, member list, invite link and role-management controls.
+- [x] Add regression coverage for invitation expiry, one-time acceptance, invitation authorization and role boundaries.
+- [x] Add `/help` and `/settings` Telegram commands with bilingual, actionable guidance and regression coverage.
+- [x] Add webhook rate limiting and payload-size limits without delaying Telegram callback acknowledgement.
+- [x] Add missing regression coverage for membership isolation, soft deletion and idempotent duplicate writes.
+- [x] Run final production verification, code health checks and synchronize the completed source tree to the selected GitHub repository.
+- [x] Add an integration regression showing a verified callback reaches immediate acknowledgement through the payload parser and rate-limit middleware.
+- [x] Add regression coverage for payload-size rejection on the Telegram webhook route while preserving ordinary callback acknowledgement.
+- [x] Verify production Telegram webhook behavior after the security middleware change, including authorization, payload-size handling and normal callback acknowledgement.
+- [x] Add privacy-safe structured observability for Telegram ingress, callback acknowledgement and scheduled delivery flows, with operational monitoring documentation and regression coverage.
