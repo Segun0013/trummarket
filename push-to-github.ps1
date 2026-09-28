@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 $repoUrl = "https://github.com/Segun0013/trummarket.git"
+$repoPath = (Get-Location).Path
+git config --global --add safe.directory $repoPath
 
 if (-not (Test-Path ".git")) {
   git init
