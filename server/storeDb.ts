@@ -16,6 +16,11 @@ async function exec(sql: string) {
   await getStorePool().query(sql);
 }
 
+async function ensureColumn(tableName: string, columnName: string, definition: string) {
+  const [rows] = await getStorePool().execute<DbRow[]>(`SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=? LIMIT 1`, [tableName, columnName]);
+  if (!rows.length) await exec(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
+}
+
 export async function ensureStoreSchema() {
   if (!schemaReady) schemaReady = (async () => {
     await exec(`CREATE TABLE IF NOT EXISTS shop_users (
@@ -120,13 +125,34 @@ export async function ensureStoreSchema() {
       details_json JSON NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB`);
+    await ensureColumn("shop_orders", "promo_code", "VARCHAR(64) NULL");
+    await ensureColumn("shop_orders", "discount_cents", "INT UNSIGNED NOT NULL DEFAULT 0");
+    await exec(`CREATE TABLE IF NOT EXISTS shop_promocodes (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(64) NOT NULL UNIQUE,
+      discount_percent TINYINT UNSIGNED NOT NULL,
+      max_uses INT UNSIGNED NULL,
+      uses_count INT UNSIGNED NOT NULL DEFAULT 0,
+      expires_at TIMESTAMP NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK (discount_percent BETWEEN 1 AND 100)
+    ) ENGINE=InnoDB`);
+    await exec(`CREATE TABLE IF NOT EXISTS shop_restock_subscriptions (
+      product_id INT UNSIGNED NOT NULL,
+      user_id BIGINT UNSIGNED NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (product_id, user_id),
+      CONSTRAINT shop_restock_product_fk FOREIGN KEY (product_id) REFERENCES shop_products(id),
+      CONSTRAINT shop_restock_user_fk FOREIGN KEY (user_id) REFERENCES shop_users(id)
+    ) ENGINE=InnoDB`);
   })();
   return schemaReady;
 }
 
 type DbRow = RowDataPacket & Record<string, any>;
 export type StoreUser = { id: number; telegramId: string; username: string | null; firstName: string; lastName: string | null; balanceCents: number; isBlocked: number };
-export type Product = { id: number; categoryId: number; categoryName: string; name: string; description: string; priceCents: number; currency: string; productType: string; autoDelivery: number; stock: number };
+export type Product = { id: number; categoryId: number; categoryName: string; name: string; description: string; priceCents: number; currency: string; productType: string; autoDelivery: number; stock: number; sold: number };
 
 export async function upsertUser(actor: { id: number; username?: string; first_name: string; last_name?: string }) {
   await ensureStoreSchema();
@@ -156,7 +182,8 @@ export async function listCategoriesAdmin() {
 export async function listProducts(categoryId?: number) {
   await ensureStoreSchema();
   const [rows] = await getStorePool().execute<DbRow[]>(`SELECT p.id, p.category_id categoryId, c.name categoryName, p.name, p.description, p.price_cents priceCents, p.currency, p.product_type productType, p.auto_delivery autoDelivery,
-    (SELECT COUNT(*) FROM shop_inventory i WHERE i.product_id=p.id AND i.status='AVAILABLE') stock
+    (SELECT COUNT(*) FROM shop_inventory i WHERE i.product_id=p.id AND i.status='AVAILABLE') stock,
+    (SELECT COUNT(*) FROM shop_inventory i WHERE i.product_id=p.id AND i.status='SOLD') sold
     FROM shop_products p JOIN shop_categories c ON c.id=p.category_id WHERE p.is_active=1 AND p.is_visible=1 ${categoryId ? "AND p.category_id=?" : ""} ORDER BY p.id DESC`, categoryId ? [categoryId] : []);
   return rows as Product[];
 }
@@ -210,17 +237,60 @@ export async function addInventory(productId: number, values: string[]) {
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
-export async function createReservedOrder(userId: number, product: Product) {
+export async function createPromoCode(input: { code: string; discountPercent: number; maxUses?: number | null }) {
+  await ensureStoreSchema();
+  const [result] = await getStorePool().execute<any>("INSERT INTO shop_promocodes (code, discount_percent, max_uses) VALUES (?, ?, ?)", [input.code.trim().toUpperCase(), input.discountPercent, input.maxUses ?? null]);
+  return Number(result.insertId);
+}
+
+export async function listPromoCodes() {
+  await ensureStoreSchema();
+  const [rows] = await getStorePool().query<DbRow[]>("SELECT code, discount_percent discountPercent, max_uses maxUses, uses_count usesCount, is_active isActive FROM shop_promocodes ORDER BY id DESC LIMIT 30");
+  return rows;
+}
+
+export async function setPromoCodeActive(code: string, active: boolean) {
+  await ensureStoreSchema();
+  await getStorePool().execute("UPDATE shop_promocodes SET is_active=? WHERE code=?", [active ? 1 : 0, code.toUpperCase()]);
+}
+
+export async function subscribeToRestock(productId: number, userId: number) {
+  await ensureStoreSchema();
+  await getStorePool().execute("INSERT IGNORE INTO shop_restock_subscriptions (product_id,user_id) VALUES (?,?)", [productId, userId]);
+}
+
+export async function listRestockSubscribers(productId: number) {
+  await ensureStoreSchema();
+  const [rows] = await getStorePool().execute<DbRow[]>("SELECT u.telegram_id telegramId FROM shop_restock_subscriptions s JOIN shop_users u ON u.id=s.user_id WHERE s.product_id=?", [productId]);
+  return rows as Array<{ telegramId: string }>;
+}
+
+export async function clearRestockSubscribers(productId: number) {
+  await ensureStoreSchema();
+  await getStorePool().execute("DELETE FROM shop_restock_subscriptions WHERE product_id=?", [productId]);
+}
+
+export async function createReservedOrder(userId: number, product: Product, promoCode?: string) {
   const connection = await getStorePool().getConnection();
   try {
     await connection.beginTransaction();
     const [available] = await connection.execute<DbRow[]>("SELECT id FROM shop_inventory WHERE product_id=? AND status='AVAILABLE' ORDER BY id LIMIT 1 FOR UPDATE", [product.id]);
     if (!available[0]) throw new Error("OUT_OF_STOCK");
+    let discountCents = 0;
+    let normalizedPromo: string | null = null;
+    if (promoCode) {
+      normalizedPromo = promoCode.trim().toUpperCase();
+      const [promos] = await connection.execute<DbRow[]>("SELECT code, discount_percent discountPercent, max_uses maxUses, uses_count usesCount FROM shop_promocodes WHERE code=? AND is_active=1 AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) FOR UPDATE", [normalizedPromo]);
+      const promo = promos[0];
+      if (!promo || (promo.maxUses !== null && Number(promo.usesCount) >= Number(promo.maxUses))) throw new Error("PROMO_INVALID");
+      discountCents = Math.floor(product.priceCents * Number(promo.discountPercent) / 100);
+      await connection.execute("UPDATE shop_promocodes SET uses_count=uses_count+1 WHERE code=?", [normalizedPromo]);
+    }
     const publicId = `TM-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
-    const [orderResult] = await connection.execute<any>("INSERT INTO shop_orders (public_id,user_id,product_id,inventory_id,amount_cents) VALUES (?,?,?,?,?)", [publicId, userId, product.id, available[0].id, product.priceCents]);
+    const [orderResult] = await connection.execute<any>("INSERT INTO shop_orders (public_id,user_id,product_id,inventory_id,amount_cents,promo_code,discount_cents) VALUES (?,?,?,?,?,?,?)", [publicId, userId, product.id, available[0].id, product.priceCents - discountCents, normalizedPromo, discountCents]);
     await connection.execute("UPDATE shop_inventory SET status='RESERVED', order_id=? WHERE id=?", [orderResult.insertId, available[0].id]);
     await connection.commit();
-    return { id: Number(orderResult.insertId), publicId };
+    return { id: Number(orderResult.insertId), publicId, amountCents: product.priceCents - discountCents, discountCents, promoCode: normalizedPromo };
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
@@ -232,15 +302,23 @@ export async function attachPayment(orderId: number, payment: { paymentId: strin
 
 export async function cancelReservedOrder(orderId: number) {
   await ensureStoreSchema();
-  await getStorePool().execute("UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.id=? AND o.status='PENDING' AND i.status='RESERVED'", [orderId]);
-  await getStorePool().execute("UPDATE shop_orders SET status='CANCELLED' WHERE id=? AND status='PENDING'", [orderId]);
+  const connection = await getStorePool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute<DbRow[]>("SELECT promo_code FROM shop_orders WHERE id=? AND status='PENDING' FOR UPDATE", [orderId]);
+    if (!rows[0]) { await connection.commit(); return; }
+    await connection.execute("UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.id=? AND o.status='PENDING' AND i.status='RESERVED'", [orderId]);
+    if (rows[0].promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [rows[0].promo_code]);
+    await connection.execute("UPDATE shop_orders SET status='CANCELLED' WHERE id=? AND status='PENDING'", [orderId]);
+    await connection.commit();
+  } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
 export async function deliverPaidOrder(paymentId: string, amountCents: number, status: string) {
   const connection = await getStorePool().getConnection();
   try {
     await connection.beginTransaction();
-    const [orders] = await connection.execute<DbRow[]>("SELECT o.*, u.telegram_id telegramId, p.name productName, i.value inventoryValue FROM shop_orders o JOIN shop_users u ON u.id=o.user_id JOIN shop_products p ON p.id=o.product_id LEFT JOIN shop_inventory i ON i.id=o.inventory_id WHERE o.payment_id=? FOR UPDATE", [paymentId]);
+    const [orders] = await connection.execute<DbRow[]>("SELECT o.*, u.telegram_id telegramId, p.name productName, p.id productId, i.value inventoryValue FROM shop_orders o JOIN shop_users u ON u.id=o.user_id JOIN shop_products p ON p.id=o.product_id LEFT JOIN shop_inventory i ON i.id=o.inventory_id WHERE o.payment_id=? FOR UPDATE", [paymentId]);
     const order = orders[0];
     if (!order) throw new Error("ORDER_NOT_FOUND");
     if (Number(order.amount_cents) !== amountCents) throw new Error("AMOUNT_MISMATCH");
@@ -248,6 +326,7 @@ export async function deliverPaidOrder(paymentId: string, amountCents: number, s
     if (status !== "paid") {
       if (["canceled", "expired"].includes(status)) {
         await connection.execute("UPDATE shop_inventory SET status='AVAILABLE', order_id=NULL WHERE id=? AND status='RESERVED'", [order.inventory_id]);
+        if (order.promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [order.promo_code]);
         await connection.execute("UPDATE shop_orders SET status='CANCELLED' WHERE id=? AND status='PENDING'", [order.id]);
       }
       await connection.commit();
@@ -271,4 +350,23 @@ export async function getProductAdminList() {
   await ensureStoreSchema();
   const [rows] = await getStorePool().query<DbRow[]>("SELECT p.id,p.name,p.price_cents priceCents,c.name categoryName,(SELECT COUNT(*) FROM shop_inventory i WHERE i.product_id=p.id AND i.status='AVAILABLE') stock,p.is_active isActive FROM shop_products p JOIN shop_categories c ON c.id=p.category_id ORDER BY p.id DESC");
   return rows;
+}
+
+export async function exportOrdersCsv() {
+  await ensureStoreSchema();
+  const [rows] = await getStorePool().query<DbRow[]>(`SELECT o.public_id orderId,u.telegram_id telegramId,u.username,p.name product,o.status,o.amount_cents amountCents,o.promo_code promoCode,o.created_at createdAt,o.paid_at paidAt
+    FROM shop_orders o JOIN shop_users u ON u.id=o.user_id JOIN shop_products p ON p.id=o.product_id ORDER BY o.id DESC LIMIT 50000`);
+  return rows as Array<Record<string, unknown>>;
+}
+
+export async function exportInventoryCsv() {
+  await ensureStoreSchema();
+  const [rows] = await getStorePool().query<DbRow[]>(`SELECT p.id productId,p.name product,c.name category,i.status,i.value item,i.created_at addedAt,i.sold_at soldAt,o.public_id orderId
+    FROM shop_inventory i JOIN shop_products p ON p.id=i.product_id JOIN shop_categories c ON c.id=p.category_id LEFT JOIN shop_orders o ON o.id=i.order_id ORDER BY p.id,i.id LIMIT 50000`);
+  return rows as Array<Record<string, unknown>>;
+}
+
+export async function recordAdminAction(adminId: number, action: string, targetType: string, targetId?: string, details?: unknown) {
+  await ensureStoreSchema();
+  await getStorePool().execute("INSERT INTO shop_admin_actions (admin_telegram_id,action,target_type,target_id,details_json) VALUES (?,?,?,?,?)", [String(adminId), action, targetType, targetId ?? null, details ? JSON.stringify(details) : null]);
 }
