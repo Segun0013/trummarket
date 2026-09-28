@@ -8,10 +8,11 @@ The buyer flow is `/start` → catalog → product → RollyPay payment → auto
 
 | Area | Implementation |
 | --- | --- |
-| Telegram commands | `/start`, `/balance`, `/add_income`, and `/add_expense` are handled through a protected webhook. Income and expense commands accept `<amount> <category> [description]`. |
-| Private dashboard | A Telegram WebApp provides exactly four summary metrics: **Current Balance**, **Monthly Income**, **Monthly Expenses**, and **Savings Rate**. |
-| Financial tools | Users can add entries, browse filtered history, compare cash flow, and view spending categories. Amounts are stored as integer cents to avoid rounding errors. |
-| Isolation | Every query is scoped to the wallet user recovered from cryptographically verified Telegram `initData`. |
+| Catalog | Categories and visible products are shown with current stock and prices. |
+| Checkout | A product reserves one inventory item atomically before a RollyPay checkout is created. Failed checkout creation releases the reservation. |
+| Delivery | A signed RollyPay callback marks the payment and delivers the reserved digital item once. Duplicate callbacks are idempotent. |
+| Administration | The configured administrator can create categories, create products, and upload one key per inventory line from Telegram. |
+| Security | Telegram webhook requests use a secret token; RollyPay callbacks use HMAC-SHA256 over the raw request body. |
 
 ## Configuration
 
