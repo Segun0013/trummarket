@@ -21,19 +21,19 @@ async function telegram(method, body) {
 }
 
 await telegram("setMyDescription", {
-  description: "Wallet — личный учёт доходов и расходов.\n\nWallet — private income and expense tracking.",
+  description: "TrumMarket — магазин цифровых товаров с автоматической выдачей после оплаты.",
 });
 
 await telegram("setMyShortDescription", {
-  short_description: "Личный кошелёк / Private wallet",
+  short_description: "Магазин цифровых товаров",
 });
 
 await telegram("setMyCommands", {
   commands: [
-    { command: "start", description: "Open your private wallet" },
-    { command: "balance", description: "Show your current balance" },
-    { command: "add_income", description: "Add income: amount category note" },
-    { command: "add_expense", description: "Add expense: amount category note" },
+    { command: "start", description: "Открыть магазин" },
+    { command: "catalog", description: "Каталог товаров" },
+    { command: "orders", description: "Мои покупки" },
+    { command: "admin", description: "Панель администратора" },
   ],
 });
 

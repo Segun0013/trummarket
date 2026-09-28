@@ -1,6 +1,8 @@
-# Wallet for Telegram
+# TrumMarket for Telegram
 
-Wallet is a Telegram Mini App and bot for isolated personal-income and expense tracking. Each record belongs to the verified Telegram identity that created it; the dashboard never accepts a user ID from the client.
+TrumMarket is a Telegram shop for digital goods. The active server contour uses store tables (`shop_*`), RollyPay checkout, signed payment callbacks, atomic inventory reservation, and automatic key delivery. The former wallet interface is no longer mounted by the server.
+
+The buyer flow is `/start` → catalog → product → RollyPay payment → automatic delivery. The administrator manages categories, products, and inventory with `/admin` inside Telegram.
 
 ## Delivered functionality
 
@@ -11,6 +13,12 @@ Wallet is a Telegram Mini App and bot for isolated personal-income and expense t
 | Financial tools | Users can add entries, browse filtered history, compare cash flow, and view spending categories. Amounts are stored as integer cents to avoid rounding errors. |
 | Isolation | Every query is scoped to the wallet user recovered from cryptographically verified Telegram `initData`. |
 
+## Configuration
+
+Copy `.env.example` to `.env` and set the Telegram, database, administrator, and RollyPay variables. Keep all secrets only on the server. Configure the RollyPay callback as:
+
+`https://trummarket.online/api/payments/rollypay/callback`
+
 ## One-time Telegram connection
 
 The bot uses an HTTPS webhook and a WebApp button, both supported by Telegram's Bot API and Mini Apps platform.[1][2]
@@ -19,7 +27,7 @@ The bot uses an HTTPS webhook and a WebApp button, both supported by Telegram's 
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Token from @BotFather. It is used only by server-side code to reply to commands. |
 | `TELEGRAM_WEBHOOK_SECRET` | A long random value configured as the Telegram webhook secret token and checked on every webhook request. |
-| `TELEGRAM_WEBAPP_URL` | The final public **HTTPS** address of the deployed application, for example `https://wallet.example.com`. |
+| `TELEGRAM_WEBAPP_URL` | The final public **HTTPS** address used in payment redirects, for example `https://trummarket.online`. |
 
 After the application is publicly available over HTTPS, set `TELEGRAM_WEBAPP_URL` to its root URL and run the following command from a trusted environment that has the three variables configured:
 
@@ -27,7 +35,7 @@ After the application is publicly available over HTTPS, set `TELEGRAM_WEBAPP_URL
 node scripts/register-telegram.mjs
 ```
 
-This registers the four bot commands and points Telegram to `<TELEGRAM_WEBAPP_URL>/api/telegram/webhook`. Do not include the webhook path inside `TELEGRAM_WEBAPP_URL` itself.
+This registers the shop commands and points Telegram to `<TELEGRAM_WEBAPP_URL>/api/telegram/webhook`. Do not include the webhook path inside `TELEGRAM_WEBAPP_URL` itself.
 
 ## Local checks
 
