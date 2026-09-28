@@ -25,12 +25,12 @@ async function releaseExpiredReservationsWithConnection(connection: PoolConnecti
   const expiry = "COALESCE(reservation_expires_at, DATE_ADD(created_at, INTERVAL 180 SECOND))";
   const joinedExpiry = "COALESCE(o.reservation_expires_at, DATE_ADD(o.created_at, INTERVAL 180 SECOND))";
   const [rows] = await connection.query<DbRow[]>(`SELECT id, promo_code FROM shop_orders WHERE status='PENDING' AND ${expiry}<=CURRENT_TIMESTAMP FOR UPDATE`);
-  if (!rows.length) return 0;
-  await connection.query(`UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.status='PENDING' AND ${joinedExpiry}<=CURRENT_TIMESTAMP AND i.status='RESERVED'`);
+  if (rows.length) await connection.query(`UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.status='PENDING' AND ${joinedExpiry}<=CURRENT_TIMESTAMP AND i.status='RESERVED'`);
   for (const row of rows) {
     if (row.promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [row.promo_code]);
   }
-  await connection.query(`UPDATE shop_orders SET status='CANCELLED' WHERE status='PENDING' AND ${expiry}<=CURRENT_TIMESTAMP`);
+  if (rows.length) await connection.query(`UPDATE shop_orders SET status='CANCELLED' WHERE status='PENDING' AND ${expiry}<=CURRENT_TIMESTAMP`);
+  await connection.query("UPDATE shop_inventory i LEFT JOIN shop_orders o ON o.id=i.order_id SET i.status='AVAILABLE', i.order_id=NULL WHERE i.status='RESERVED' AND (o.id IS NULL OR o.status IN ('CANCELLED','FAILED','REFUNDED'))");
   return rows.length;
 }
 

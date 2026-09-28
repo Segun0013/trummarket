@@ -44,6 +44,7 @@ async function startServer() {
   }
 
   await initializeStore();
+  releaseExpiredReservations().catch(error => console.error("[Store] Reservation cleanup failed", error));
   const reservationSweeper = setInterval(() => {
     releaseExpiredReservations().catch(error => console.error("[Store] Reservation cleanup failed", error));
   }, 30_000);
