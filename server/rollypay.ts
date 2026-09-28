@@ -26,7 +26,10 @@ export async function createRollyPayPayment(input: { amountCents: number; orderI
     }),
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok || !body.pay_url || !body.payment_id) throw new Error(`RollyPay payment creation failed: ${response.status}`);
+  if (!response.ok || !body.pay_url || !body.payment_id) {
+    const detail = typeof body?.message === "string" ? body.message : typeof body?.error === "string" ? body.error : "invalid response";
+    throw new Error(`RollyPay payment creation failed: ${response.status} (${detail})`);
+  }
   return body as { payment_id: string; pay_url: string; status: string; amount: string };
 }
 

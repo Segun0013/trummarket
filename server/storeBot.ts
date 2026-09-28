@@ -141,14 +141,19 @@ async function handleBuy(actor: Actor, chatId: number, messageId: number | undef
   let order: { id: number; publicId: string; amountCents: number; discountCents: number; promoCode: string | null };
   const fail = (text: string, markup?: Record<string, unknown>) => messageId ? edit(chatId, messageId, text, markup) : send(chatId, text, markup);
   try { order = await createReservedOrder(user.id, product, promoCode); } catch (error) { if ((error as Error).message === "OUT_OF_STOCK") return fail("❌ Товар только что закончился.", mainMenu()); if ((error as Error).message === "PROMO_INVALID") return fail("❌ Промокод недействителен или лимит использований исчерпан.", kb([[{ text: "Попробовать другой промокод", callback_data: `buy:${product.id}` }], [{ text: "Без промокода", callback_data: `buyplain:${product.id}` }]])); throw error; }
+  let payment: Awaited<ReturnType<typeof createRollyPayPayment>>;
   try {
-    const payment = await createRollyPayPayment({ amountCents: order.amountCents, orderId: order.publicId, description: `TrumMarket: ${product.name}`, webUrl: webUrl() });
+    payment = await createRollyPayPayment({ amountCents: order.amountCents, orderId: order.publicId, description: `TrumMarket: ${product.name}`, webUrl: webUrl() });
     await attachPayment(order.id, { paymentId: payment.payment_id, amountCents: order.amountCents, status: payment.status || "created", payload: payment });
-    const priceLine = order.discountCents ? `Цена: <s>${money(product.priceCents)}</s>\nСкидка: ${money(order.discountCents)}\n` : "";
-    const receipt = `🧾 <b>Заказ ${order.publicId}</b>\n\nТовар: ${escapeHtml(product.name)}\n${priceLine}Сумма: <b>${money(order.amountCents)}</b>\n\nПосле оплаты товар выдастся автоматически.`;
-    const markup = kb([[{ text: "💳 Перейти к оплате", url: payment.pay_url }], [{ text: "📦 Мои покупки", callback_data: "orders" }], [{ text: "◀️ В меню", callback_data: "home" }]]);
-    return messageId ? edit(chatId, messageId, receipt, markup) : send(chatId, receipt, markup);
-  } catch (error) { await cancelReservedOrder(order.id); throw error; }
+  } catch (error) {
+    await cancelReservedOrder(order.id);
+    console.error("[Store] Checkout creation failed", { orderId: order.publicId, error: error instanceof Error ? error.message : String(error) });
+    return fail("❌ Не удалось создать страницу оплаты. Резерв товара снят. Попробуйте оформить заказ ещё раз чуть позже.", kb([[{ text: "🔄 Повторить", callback_data: `buy:${product.id}` }], [{ text: "◀️ В меню", callback_data: "home" }]]));
+  }
+  const priceLine = order.discountCents ? `Цена: <s>${money(product.priceCents)}</s>\nСкидка: ${money(order.discountCents)}\n` : "";
+  const receipt = `🧾 <b>Заказ ${order.publicId}</b>\n\nТовар: ${escapeHtml(product.name)}\n${priceLine}Сумма: <b>${money(order.amountCents)}</b>\n\nПосле оплаты товар выдастся автоматически.`;
+  const markup = kb([[{ text: "💳 Перейти к оплате", url: payment.pay_url }], [{ text: "📦 Мои покупки", callback_data: "orders" }], [{ text: "◀️ В меню", callback_data: "home" }]]);
+  return messageId ? edit(chatId, messageId, receipt, markup) : send(chatId, receipt, markup);
 }
 
 async function handleCallback(update: NonNullable<Update["callback_query"]>) {
@@ -159,7 +164,7 @@ async function handleCallback(update: NonNullable<Update["callback_query"]>) {
   if (data === "catalog") return showCatalog(chatId, messageId);
   if (data.startsWith("category:")) return showCategory(chatId, messageId, Number(data.slice(9)));
   if (data.startsWith("product:")) return showProduct(chatId, messageId, Number(data.slice(8)));
-  if (data.startsWith("buy:")) { const productId = Number(data.slice(4)); states.set(actor.id, { kind: "promo_checkout", productId }); return send(chatId, "Введите промокод или отправьте /skip, чтобы продолжить без скидки."); }
+  if (data.startsWith("buy:")) { const productId = Number(data.slice(4)); states.set(actor.id, { kind: "promo_checkout", productId }); return send(chatId, "Введите промокод или нажмите кнопку ниже, чтобы продолжить без скидки.", kb([[{ text: "Продолжить без промокода", callback_data: `buyplain:${productId}` }], [{ text: "Отмена", callback_data: `product:${productId}` }]])); }
   if (data.startsWith("buyplain:")) { states.delete(actor.id); return handleBuy(actor, chatId, messageId, Number(data.slice(9))); }
   if (data.startsWith("restock:")) { const productId = Number(data.slice(8)); const user = await upsertUser(actor); await subscribeToRestock(productId, user.id); return edit(chatId, messageId, "🔔 Готово. Напишу сюда, когда товар снова появится.", kb([[{ text: "◀️ В меню", callback_data: "home" }]])); }
   if (data === "profile") { const user = await upsertUser(actor); return edit(chatId, messageId, `👤 <b>Профиль</b>\n\nTelegram ID: <code>${actor.id}</code>\nБаланс: ${money(user.balanceCents)}`, kb([[{ text: "📦 Мои покупки", callback_data: "orders" }], [{ text: "◀️ В меню", callback_data: "home" }]])); }
