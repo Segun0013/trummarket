@@ -184,7 +184,7 @@ export async function listProducts(categoryId?: number) {
   const [rows] = await getStorePool().execute<DbRow[]>(`SELECT p.id, p.category_id categoryId, c.name categoryName, p.name, p.description, p.price_cents priceCents, p.currency, p.product_type productType, p.auto_delivery autoDelivery,
     (SELECT COUNT(*) FROM shop_inventory i WHERE i.product_id=p.id AND i.status='AVAILABLE') stock,
     (SELECT COUNT(*) FROM shop_inventory i WHERE i.product_id=p.id AND i.status='SOLD') sold
-    FROM shop_products p JOIN shop_categories c ON c.id=p.category_id WHERE p.is_active=1 AND p.is_visible=1 ${categoryId ? "AND p.category_id=?" : ""} ORDER BY p.id DESC`, categoryId ? [categoryId] : []);
+    FROM shop_products p JOIN shop_categories c ON c.id=p.category_id WHERE p.is_active=1 AND p.is_visible=1 AND c.is_active=1 ${categoryId ? "AND p.category_id=?" : ""} ORDER BY p.id DESC`, categoryId ? [categoryId] : []);
   return rows as Product[];
 }
 
