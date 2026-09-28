@@ -4,6 +4,7 @@ import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { handleRollyPayWebhook, handleStoreTelegramWebhook, initializeStore } from "../storeBot";
+import { releaseExpiredReservations } from "../storeDb";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -43,6 +44,10 @@ async function startServer() {
   }
 
   await initializeStore();
+  const reservationSweeper = setInterval(() => {
+    releaseExpiredReservations().catch(error => console.error("[Store] Reservation cleanup failed", error));
+  }, 30_000);
+  reservationSweeper.unref();
   server.listen(port, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${port}/`);
   });

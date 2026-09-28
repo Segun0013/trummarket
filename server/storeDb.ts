@@ -21,6 +21,17 @@ async function ensureColumn(tableName: string, columnName: string, definition: s
   if (!rows.length) await exec(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
 }
 
+async function releaseExpiredReservationsWithConnection(connection: PoolConnection) {
+  const [rows] = await connection.query<DbRow[]>(`SELECT id, promo_code FROM shop_orders WHERE status='PENDING' AND reservation_expires_at IS NOT NULL AND reservation_expires_at<=CURRENT_TIMESTAMP FOR UPDATE`);
+  if (!rows.length) return 0;
+  await connection.query("UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.status='PENDING' AND o.reservation_expires_at<=CURRENT_TIMESTAMP AND i.status='RESERVED'");
+  for (const row of rows) {
+    if (row.promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [row.promo_code]);
+  }
+  await connection.query("UPDATE shop_orders SET status='CANCELLED' WHERE status='PENDING' AND reservation_expires_at<=CURRENT_TIMESTAMP");
+  return rows.length;
+}
+
 export async function ensureStoreSchema() {
   if (!schemaReady) schemaReady = (async () => {
     await exec(`CREATE TABLE IF NOT EXISTS shop_users (
@@ -127,6 +138,7 @@ export async function ensureStoreSchema() {
     ) ENGINE=InnoDB`);
     await ensureColumn("shop_orders", "promo_code", "VARCHAR(64) NULL");
     await ensureColumn("shop_orders", "discount_cents", "INT UNSIGNED NOT NULL DEFAULT 0");
+    await ensureColumn("shop_orders", "reservation_expires_at", "TIMESTAMP NULL");
     await exec(`CREATE TABLE IF NOT EXISTS shop_promocodes (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
       code VARCHAR(64) NOT NULL UNIQUE,
@@ -274,6 +286,7 @@ export async function createReservedOrder(userId: number, product: Product, prom
   const connection = await getStorePool().getConnection();
   try {
     await connection.beginTransaction();
+    await releaseExpiredReservationsWithConnection(connection);
     const [available] = await connection.execute<DbRow[]>("SELECT id FROM shop_inventory WHERE product_id=? AND status='AVAILABLE' ORDER BY id LIMIT 1 FOR UPDATE", [product.id]);
     if (!available[0]) throw new Error("OUT_OF_STOCK");
     let discountCents = 0;
@@ -287,7 +300,7 @@ export async function createReservedOrder(userId: number, product: Product, prom
       await connection.execute("UPDATE shop_promocodes SET uses_count=uses_count+1 WHERE code=?", [normalizedPromo]);
     }
     const publicId = `TM-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
-    const [orderResult] = await connection.execute<any>("INSERT INTO shop_orders (public_id,user_id,product_id,inventory_id,amount_cents,promo_code,discount_cents) VALUES (?,?,?,?,?,?,?)", [publicId, userId, product.id, available[0].id, product.priceCents - discountCents, normalizedPromo, discountCents]);
+    const [orderResult] = await connection.execute<any>("INSERT INTO shop_orders (public_id,user_id,product_id,inventory_id,amount_cents,promo_code,discount_cents,reservation_expires_at) VALUES (?,?,?,?,?,?,?,DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 180 SECOND))", [publicId, userId, product.id, available[0].id, product.priceCents - discountCents, normalizedPromo, discountCents]);
     await connection.execute("UPDATE shop_inventory SET status='RESERVED', order_id=? WHERE id=?", [orderResult.insertId, available[0].id]);
     await connection.commit();
     return { id: Number(orderResult.insertId), publicId, amountCents: product.priceCents - discountCents, discountCents, promoCode: normalizedPromo };
@@ -314,15 +327,36 @@ export async function cancelReservedOrder(orderId: number) {
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
+export async function releaseExpiredReservations() {
+  await ensureStoreSchema();
+  const connection = await getStorePool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const released = await releaseExpiredReservationsWithConnection(connection);
+    await connection.commit();
+    return released;
+  } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+}
+
 export async function deliverPaidOrder(paymentId: string, amountCents: number, status: string) {
   const connection = await getStorePool().getConnection();
   try {
     await connection.beginTransaction();
-    const [orders] = await connection.execute<DbRow[]>("SELECT o.*, u.telegram_id telegramId, p.name productName, p.id productId, i.value inventoryValue FROM shop_orders o JOIN shop_users u ON u.id=o.user_id JOIN shop_products p ON p.id=o.product_id LEFT JOIN shop_inventory i ON i.id=o.inventory_id WHERE o.payment_id=? FOR UPDATE", [paymentId]);
+    await releaseExpiredReservationsWithConnection(connection);
+    const [orders] = await connection.execute<DbRow[]>("SELECT o.*, u.telegram_id telegramId, p.name productName, p.id productId, i.value inventoryValue, i.status inventoryStatus FROM shop_orders o JOIN shop_users u ON u.id=o.user_id JOIN shop_products p ON p.id=o.product_id LEFT JOIN shop_inventory i ON i.id=o.inventory_id WHERE o.payment_id=? FOR UPDATE", [paymentId]);
     const order = orders[0];
     if (!order) throw new Error("ORDER_NOT_FOUND");
     if (Number(order.amount_cents) !== amountCents) throw new Error("AMOUNT_MISMATCH");
     await connection.execute("UPDATE shop_payments SET status=?, payload_json=payload_json WHERE payment_id=?", [status, paymentId]);
+    if (status === "paid" && order.status === "CANCELLED") {
+      await connection.execute("UPDATE shop_orders SET status='FAILED' WHERE id=? AND status='CANCELLED'", [order.id]);
+      await connection.commit();
+      return { action: "late_paid", order };
+    }
+    if (order.status !== "PENDING" || order.inventoryStatus !== "RESERVED") {
+      await connection.commit();
+      return { action: "ignored", order };
+    }
     if (status !== "paid") {
       if (["canceled", "expired"].includes(status)) {
         await connection.execute("UPDATE shop_inventory SET status='AVAILABLE', order_id=NULL WHERE id=? AND status='RESERVED'", [order.inventory_id]);

@@ -203,6 +203,7 @@ export async function handleRollyPayWebhook(req: Request, res: Response) {
     if (!event.payment_id || !event.status) return res.sendStatus(400);
     const result = await deliverPaidOrder(event.payment_id, Math.round(Number(event.amount || 0) * 100), event.status);
     if (result.action === "delivered") await telegram("sendMessage", { chat_id: result.order.telegramId, text: `✅ <b>Покупка успешно завершена</b>\n\nТовар: ${escapeHtml(result.order.productName)}\n\nВаш товар:\n<code>${escapeHtml(result.order.inventoryValue)}</code>`, parse_mode: "HTML" });
+    if (result.action === "late_paid") for (const adminId of adminIds()) await send(adminId, `⚠️ Поздняя оплата\nЗаказ: ${result.order.public_id}\nПлатёж пришёл после истечения 180 секунд. Нужна ручная проверка/возврат.`);
     res.sendStatus(200);
   } catch (error) { console.error("[Store] RollyPay webhook failed", error); res.sendStatus(500); }
 }
