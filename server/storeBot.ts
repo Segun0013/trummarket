@@ -140,7 +140,15 @@ async function handleBuy(actor: Actor, chatId: number, messageId: number | undef
   if (!product) return edit(chatId, messageId, "Товар не найден.", mainMenu());
   let order: { id: number; publicId: string; amountCents: number; discountCents: number; promoCode: string | null };
   const fail = (text: string, markup?: Record<string, unknown>) => messageId ? edit(chatId, messageId, text, markup) : send(chatId, text, markup);
-  try { order = await createReservedOrder(user.id, product, promoCode); } catch (error) { if ((error as Error).message === "OUT_OF_STOCK") return fail("❌ Товар только что закончился.", mainMenu()); if ((error as Error).message === "PROMO_INVALID") return fail("❌ Промокод недействителен или лимит использований исчерпан.", kb([[{ text: "Попробовать другой промокод", callback_data: `buy:${product.id}` }], [{ text: "Без промокода", callback_data: `buyplain:${product.id}` }]])); throw error; }
+  try {
+    order = await createReservedOrder(user.id, product, promoCode);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (reason === "OUT_OF_STOCK") return fail("❌ Товар только что закончился.", mainMenu());
+    if (reason === "PROMO_INVALID") return fail("❌ Промокод недействителен или лимит использований исчерпан.", kb([[{ text: "Попробовать другой промокод", callback_data: `buy:${product.id}` }], [{ text: "Без промокода", callback_data: `buyplain:${product.id}` }]]));
+    console.error("[Store] Order reservation failed", { productId, error: reason });
+    return fail("❌ Не удалось оформить заказ. Попробуйте ещё раз чуть позже.", kb([[{ text: "🔄 Повторить", callback_data: `buy:${product.id}` }], [{ text: "◀️ В меню", callback_data: "home" }]]));
+  }
   let payment: Awaited<ReturnType<typeof createRollyPayPayment>>;
   try {
     payment = await createRollyPayPayment({ amountCents: order.amountCents, orderId: order.publicId, description: `TrumMarket: ${product.name}`, webUrl: webUrl() });
