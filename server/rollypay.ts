@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
-const baseUrl = (process.env.ROLLYPAY_API_URL || "https://rollypay.io").replace(/\/$/, "");
+const configuredBaseUrl = (process.env.ROLLYPAY_API_URL || "https://rollypay.io").replace(/\/$/, "");
+const baseUrl = configuredBaseUrl.replace(/^https:\/\/panel\.rollypay\.io(?=\/|$)/i, "https://rollypay.io");
 const apiKey = process.env.ROLLYPAY_API_KEY;
 const terminalId = process.env.ROLLYPAY_TERMINAL_ID;
 const signingSecret = process.env.ROLLYPAY_SIGNING_SECRET;
