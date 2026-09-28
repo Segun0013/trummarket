@@ -17,18 +17,18 @@ git branch -M main
 
 $remoteLine = (git ls-remote origin refs/heads/main)
 if (-not $remoteLine) {
-  throw "Не удалось получить текущий main с GitHub. Проверьте вход в GitHub и сеть."
+  throw "Could not read current GitHub main. Check GitHub login and network."
 }
 $remoteSha = ($remoteLine -split "\s+")[0]
 
 $head = (git rev-parse HEAD)
 if (-not $head) {
-  throw "Локальный Git не содержит коммитов."
+  throw "The local Git repository has no commits."
 }
 
-Write-Host "Отправляется коммит $head"
-Write-Host "Текущий GitHub main: $remoteSha"
-Write-Host "Ветка main будет обновлена на готовую версию TrumMarket."
+Write-Host "Pushing commit $head"
+Write-Host "Current GitHub main: $remoteSha"
+Write-Host "Updating main to the TrumMarket release."
 
 git push origin "HEAD:main" "--force-with-lease=refs/heads/main:$remoteSha"
-Write-Host "Готово: https://github.com/Segun0013/trummarket"
+Write-Host "Done: https://github.com/Segun0013/trummarket"
