@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { addInventory, attachPayment, cancelReservedOrder, clearRestockSubscribers, createCategory, createProduct, createPromoCode, createReservedOrder, deliverPaidOrder, exportInventoryCsv, exportOrdersCsv, getCategory, getProduct, getProductAdminList, listCategories, listCategoriesAdmin, listProducts, listPromoCodes, listRestockSubscribers, listUserOrders, recordAdminAction, setCategoryActive, setPromoCodeActive, subscribeToRestock, updateCategory, ensureStoreSchema, upsertUser } from "./storeDb";
+import { addInventory, attachPayment, cancelReservedOrder, clearRestockSubscribers, createCategory, createProduct, createPromoCode, createReservedOrder, deliverPaidOrder, exportInventoryCsv, exportOrdersCsv, getCategory, getProduct, getProductAdminList, listCategories, listCategoriesAdmin, listProducts, listPromoCodes, listRestockSubscribers, listUserOrders, recordAdminAction, restoreInventory, setCategoryActive, setPromoCodeActive, subscribeToRestock, updateCategory, ensureStoreSchema, upsertUser } from "./storeDb";
 import { createRollyPayPayment, verifyRollyPaySignature } from "./rollypay";
 
 type Actor = { id: number; username?: string; first_name: string; last_name?: string };
@@ -11,6 +11,7 @@ type AdminState =
   | { kind: "category_description"; categoryId: number }
   | { kind: "product" }
   | { kind: "keys"; productId?: number }
+  | { kind: "restore_keys"; productId: number }
   | { kind: "promo_checkout"; productId: number }
   | { kind: "promo_create" };
 const states = new Map<number, AdminState>();
@@ -78,8 +79,16 @@ async function addKeysFromInput(actor: Actor, chatId: number, input: string, pro
   states.delete(actor.id);
   return send(chatId, `✅ Добавлено ключей: ${added}${added > 0 ? "\n🔔 Подписчики уведомлены." : ""}`, adminMenu());
 }
+
+async function restoreKeysFromInput(actor: Actor, chatId: number, input: string, productId: number) {
+  const values = input.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  if (!values.length) return send(chatId, "Отправьте хотя бы один ключ.");
+  const restored = await restoreInventory(productId, values);
+  states.delete(actor.id);
+  return send(chatId, `✅ Возвращено в наличие: ${restored}`, adminMenu());
+}
 function mainMenu() { return kb([[{ text: "🛒 Каталог", callback_data: "catalog" }], [{ text: "👤 Профиль", callback_data: "profile" }, { text: "📦 Мои покупки", callback_data: "orders" }], [{ text: "📞 Поддержка", callback_data: "support" }]]); }
-function adminMenu() { return kb([[{ text: "📦 Товары", callback_data: "admin:products" }], [{ text: "📁 Категории", callback_data: "admin:categories" }], [{ text: "📁 Добавить категорию", callback_data: "admin:add_category" }], [{ text: "➕ Добавить товар", callback_data: "admin:add_product" }], [{ text: "🔑 Добавить ключи", callback_data: "admin:add_keys" }], [{ text: "🎟 Промокоды", callback_data: "admin:promos" }], [{ text: "📊 Выгрузить базу CSV", callback_data: "admin:exports" }], [{ text: "◀️ В магазин", callback_data: "home" }]]); }
+function adminMenu() { return kb([[{ text: "📦 Товары", callback_data: "admin:products" }], [{ text: "📁 Категории", callback_data: "admin:categories" }], [{ text: "📁 Добавить категорию", callback_data: "admin:add_category" }], [{ text: "➕ Добавить товар", callback_data: "admin:add_product" }], [{ text: "🔑 Добавить ключи", callback_data: "admin:add_keys" }], [{ text: "♻️ Вернуть тестовые ключи", callback_data: "admin:restore_keys" }], [{ text: "🎟 Промокоды", callback_data: "admin:promos" }], [{ text: "📊 Выгрузить базу CSV", callback_data: "admin:exports" }], [{ text: "◀️ В магазин", callback_data: "home" }]]); }
 
 async function showAdminCategories(chatId: number, messageId: number) {
   const categories = await listCategoriesAdmin();
@@ -150,6 +159,8 @@ async function handleCallback(update: NonNullable<Update["callback_query"]>) {
   if (!data.startsWith("admin:") || !isAdmin(actor.id)) return;
   if (data === "admin:home") return edit(chatId, messageId, "⚙️ <b>Админ-панель магазина</b>", adminMenu());
   if (data.startsWith("admin:keys:")) { const productId = Number(data.slice("admin:keys:".length)); states.set(actor.id, { kind: "keys", productId }); return send(chatId, `Отправьте ключи для товара #${productId}: текстом по одному в строке или TXT/CSV-файлом.\n/cancel — отмена`); }
+  if (data === "admin:restore_keys") { const products = await getProductAdminList(); return edit(chatId, messageId, "Выберите товар, затем отправьте строки ключей, которые нужно вернуть из SOLD/DISABLED в наличие.", kb([...products.map(p => [{ text: `#${p.id} ${p.name}`, callback_data: `admin:restore_keys:${p.id}` }]), [{ text: "◀️ В админ-панель", callback_data: "admin:home" }]])); }
+  if (data.startsWith("admin:restore_keys:")) { const productId = Number(data.slice("admin:restore_keys:".length)); states.set(actor.id, { kind: "restore_keys", productId }); return send(chatId, `Отправьте только точные ключи товара #${productId}, каждый с новой строки. Можно также приложить TXT/CSV. Будут восстановлены только совпадающие ключи со статусом SOLD или DISABLED.\n/cancel — отмена`); }
   if (data === "admin:promos") { const promos = await listPromoCodes(); const rows = promos.map(p => [{ text: `${p.isActive ? "🟢" : "⚪"} ${p.code} · ${p.discountPercent}% · ${p.usesCount}${p.maxUses ? `/${p.maxUses}` : ""}`, callback_data: `admin:promo:toggle:${p.code}` }]); return edit(chatId, messageId, promos.length ? "🎟 <b>Промокоды</b>\nНажмите на код, чтобы включить или отключить его." : "🎟 Промокодов пока нет.", kb([...rows, [{ text: "➕ Создать промокод", callback_data: "admin:promo:create" }], [{ text: "◀️ В админ-панель", callback_data: "admin:home" }]])); }
   if (data === "admin:promo:create") { states.set(actor.id, { kind: "promo_create" }); return send(chatId, "Введите 3 строки: код, скидка в процентах (1-100), лимит использований (0 = без лимита). Например:\nSUMMER10\n10\n100\n/cancel — отмена"); }
   if (data.startsWith("admin:promo:toggle:")) { const code = data.slice("admin:promo:toggle:".length); const promos = await listPromoCodes(); const promo = promos.find(p => p.code === code); if (promo) await setPromoCodeActive(code, !promo.isActive); return edit(chatId, messageId, "Статус промокода обновлён.", kb([[{ text: "◀️ К промокодам", callback_data: "admin:promos" }]])); }
@@ -173,6 +184,8 @@ async function handleMessage(message: NonNullable<Update["message"]>) {
   if (text === "/cancel") { states.delete(actor.id); return send(chatId, "Действие отменено.", isAdmin(actor.id) ? adminMenu() : mainMenu()); }
   const state = states.get(actor.id);
   if (state?.kind === "promo_checkout") { states.delete(actor.id); return handleBuy(actor, chatId, undefined, state.productId, text === "/skip" ? undefined : text); }
+  if (state?.kind === "restore_keys" && isAdmin(actor.id) && text) return restoreKeysFromInput(actor, chatId, text, state.productId);
+  if (state?.kind === "restore_keys" && isAdmin(actor.id) && message.document) { try { return restoreKeysFromInput(actor, chatId, await readTelegramDocument(message.document), state.productId); } catch { return send(chatId, "Не удалось прочитать файл. Отправьте TXT или CSV в UTF-8, не больше 2 МБ."); } }
   if (state?.kind === "promo_create" && isAdmin(actor.id)) { const lines = text.split(/\r?\n/).map(value => value.trim()); const discount = Number(lines[1]); const maxUses = Number(lines[2]); if (!lines[0] || !Number.isInteger(discount) || discount < 1 || discount > 100 || !Number.isInteger(maxUses) || maxUses < 0) return send(chatId, "Нужно 3 строки: код, скидка 1-100, лимит 0 или больше."); await createPromoCode({ code: lines[0], discountPercent: discount, maxUses: maxUses || null }); states.delete(actor.id); return send(chatId, "✅ Промокод создан.", adminMenu()); }
   if (state?.kind === "category" && isAdmin(actor.id)) { const id = await createCategory(text); states.delete(actor.id); return send(chatId, `✅ Категория создана: #${id}`, adminMenu()); }
   if (state?.kind === "category_name" && isAdmin(actor.id)) { if (!text) return send(chatId, "Название не может быть пустым."); await updateCategory(state.categoryId, { name: text, description: String((await getCategory(state.categoryId))?.description ?? "") }); states.delete(actor.id); return send(chatId, "✅ Категория переименована.", adminMenu()); }

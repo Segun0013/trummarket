@@ -249,6 +249,21 @@ export async function addInventory(productId: number, values: string[]) {
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
+export async function restoreInventory(productId: number, values: string[]) {
+  await ensureStoreSchema();
+  let restored = 0;
+  const connection = await getStorePool().getConnection();
+  try {
+    await connection.beginTransaction();
+    for (const value of [...new Set(values.map(v => v.trim()).filter(Boolean))]) {
+      const [result] = await connection.execute<any>(`UPDATE shop_inventory SET status='AVAILABLE', order_id=NULL, sold_at=NULL WHERE product_id=? AND value=? AND status IN ('SOLD','DISABLED')`, [productId, value]);
+      restored += Number(result.affectedRows || 0);
+    }
+    await connection.commit();
+    return restored;
+  } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+}
+
 export async function createPromoCode(input: { code: string; discountPercent: number; maxUses?: number | null }) {
   await ensureStoreSchema();
   const [result] = await getStorePool().execute<any>("INSERT INTO shop_promocodes (code, discount_percent, max_uses) VALUES (?, ?, ?)", [input.code.trim().toUpperCase(), input.discountPercent, input.maxUses ?? null]);
