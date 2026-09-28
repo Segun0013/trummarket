@@ -351,6 +351,7 @@ export async function createReservedOrder(userId: number, product: Product, prom
       const promo = promos[0];
       if (!promo || (promo.maxUses !== null && Number(promo.usesCount) >= Number(promo.maxUses))) throw new Error("PROMO_INVALID");
       discountCents = Math.floor(product.priceCents * Number(promo.discountPercent) / 100);
+      if (discountCents >= product.priceCents) throw new Error("PROMO_INVALID");
       await connection.execute("UPDATE shop_promocodes SET uses_count=uses_count+1 WHERE code=?", [normalizedPromo]);
     }
     const publicId = `TM-${crypto.randomBytes(6).toString("hex").toUpperCase()}`;
