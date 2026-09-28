@@ -145,6 +145,14 @@ export async function listCategories() {
   return rows;
 }
 
+export async function listCategoriesAdmin() {
+  await ensureStoreSchema();
+  const [rows] = await getStorePool().query<DbRow[]>(`SELECT c.id, c.name, c.description, c.is_active isActive,
+    (SELECT COUNT(*) FROM shop_products p WHERE p.category_id=c.id) productCount
+    FROM shop_categories c ORDER BY c.is_active DESC, c.sort_order, c.name`);
+  return rows;
+}
+
 export async function listProducts(categoryId?: number) {
   await ensureStoreSchema();
   const [rows] = await getStorePool().execute<DbRow[]>(`SELECT p.id, p.category_id categoryId, c.name categoryName, p.name, p.description, p.price_cents priceCents, p.currency, p.product_type productType, p.auto_delivery autoDelivery,
@@ -162,6 +170,24 @@ export async function createCategory(name: string, description = "") {
   await ensureStoreSchema();
   const [result] = await getStorePool().execute<any>("INSERT INTO shop_categories (name, description) VALUES (?, ?)", [name.trim(), description.trim()]);
   return Number(result.insertId);
+}
+
+export async function getCategory(id: number) {
+  await ensureStoreSchema();
+  const [rows] = await getStorePool().execute<DbRow[]>("SELECT id, name, description, is_active isActive FROM shop_categories WHERE id=? LIMIT 1", [id]);
+  return rows[0];
+}
+
+export async function updateCategory(id: number, input: { name: string; description: string }) {
+  await ensureStoreSchema();
+  const [result] = await getStorePool().execute<any>("UPDATE shop_categories SET name=?, description=? WHERE id=? AND is_active=1", [input.name.trim(), input.description.trim() || null, id]);
+  return Number(result.affectedRows) > 0;
+}
+
+export async function setCategoryActive(id: number, active: boolean) {
+  await ensureStoreSchema();
+  const [result] = await getStorePool().execute<any>("UPDATE shop_categories SET is_active=? WHERE id=?", [active ? 1 : 0, id]);
+  return Number(result.affectedRows) > 0;
 }
 
 export async function createProduct(input: { categoryId: number; name: string; description: string; priceCents: number; type?: string }) {

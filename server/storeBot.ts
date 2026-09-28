@@ -1,10 +1,17 @@
 import type { Request, Response } from "express";
-import { cancelReservedOrder, createCategory, createProduct, createReservedOrder, deliverPaidOrder, getProduct, getProductAdminList, listCategories, listProducts, listUserOrders, addInventory, attachPayment, ensureStoreSchema, upsertUser } from "./storeDb";
+import { addInventory, attachPayment, cancelReservedOrder, createCategory, createProduct, createReservedOrder, deliverPaidOrder, getCategory, getProduct, getProductAdminList, listCategories, listCategoriesAdmin, listProducts, listUserOrders, setCategoryActive, updateCategory, ensureStoreSchema, upsertUser } from "./storeDb";
 import { createRollyPayPayment, verifyRollyPaySignature } from "./rollypay";
 
 type Actor = { id: number; username?: string; first_name: string; last_name?: string };
-type Update = { message?: { chat: { id: number }; from?: Actor; text?: string }; callback_query?: { id: string; from: Actor; data?: string; message?: { chat: { id: number; }; message_id: number } } };
-const states = new Map<number, "category" | "product" | "keys">();
+type TelegramMessage = { chat: { id: number }; from?: Actor; text?: string; caption?: string; document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number } };
+type Update = { message?: TelegramMessage; callback_query?: { id: string; from: Actor; data?: string; message?: { chat: { id: number; }; message_id: number } } };
+type AdminState =
+  | { kind: "category" }
+  | { kind: "category_name"; categoryId: number }
+  | { kind: "category_description"; categoryId: number }
+  | { kind: "product" }
+  | { kind: "keys"; productId?: number };
+const states = new Map<number, AdminState>();
 const adminIds = () => new Set((process.env.ADMIN_IDS || process.env.OWNER_OPEN_ID || "").split(",").map(x => x.trim()).filter(Boolean));
 const isAdmin = (id: number) => adminIds().has(String(id));
 const escapeHtml = (value: unknown) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -24,8 +31,46 @@ async function telegram(method: string, payload: Record<string, unknown>) {
 async function send(chatId: number | string, text: string, markup?: Record<string, unknown>) { return telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", ...(markup ? { reply_markup: markup } : {}) }); }
 async function edit(chatId: number, messageId: number, text: string, markup?: Record<string, unknown>) { return telegram("editMessageText", { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML", ...(markup ? { reply_markup: markup } : {}) }); }
 async function answer(id: string) { return telegram("answerCallbackQuery", { callback_query_id: id }); }
+async function readTelegramDocument(document: NonNullable<TelegramMessage["document"]>) {
+  const maxBytes = 2 * 1024 * 1024;
+  if (document.file_size && document.file_size > maxBytes) throw new Error("FILE_TOO_LARGE");
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
+  const file = await telegram("getFile", { file_id: document.file_id }) as { file_path?: string };
+  if (!file.file_path) throw new Error("FILE_PATH_MISSING");
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+  if (!response.ok) throw new Error("FILE_DOWNLOAD_FAILED");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error("FILE_TOO_LARGE");
+  return bytes.toString("utf8").replace(/^\uFEFF/, "");
+}
+
+async function addKeysFromInput(actor: Actor, chatId: number, input: string, productId?: number) {
+  const lines = input.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  const resolvedProductId = productId ?? Number(lines.shift());
+  if (!resolvedProductId || !lines.length) return send(chatId, "Укажите ID товара и хотя бы один ключ.");
+  const added = await addInventory(resolvedProductId, lines);
+  states.delete(actor.id);
+  return send(chatId, `✅ Добавлено ключей: ${added}`, adminMenu());
+}
 function mainMenu() { return kb([[{ text: "🛒 Каталог", callback_data: "catalog" }], [{ text: "👤 Профиль", callback_data: "profile" }, { text: "📦 Мои покупки", callback_data: "orders" }], [{ text: "📞 Поддержка", callback_data: "support" }]]); }
-function adminMenu() { return kb([[{ text: "📦 Товары", callback_data: "admin:products" }], [{ text: "📁 Добавить категорию", callback_data: "admin:add_category" }], [{ text: "➕ Добавить товар", callback_data: "admin:add_product" }], [{ text: "🔑 Добавить ключи", callback_data: "admin:add_keys" }], [{ text: "◀️ В магазин", callback_data: "home" }]]); }
+function adminMenu() { return kb([[{ text: "📦 Товары", callback_data: "admin:products" }], [{ text: "📁 Категории", callback_data: "admin:categories" }], [{ text: "📁 Добавить категорию", callback_data: "admin:add_category" }], [{ text: "➕ Добавить товар", callback_data: "admin:add_product" }], [{ text: "🔑 Добавить ключи", callback_data: "admin:add_keys" }], [{ text: "◀️ В магазин", callback_data: "home" }]]); }
+
+async function showAdminCategories(chatId: number, messageId: number) {
+  const categories = await listCategoriesAdmin();
+  const rows = categories.map(c => [{ text: `${c.isActive ? "🟢" : "⚪"} #${c.id} ${c.name} · ${c.productCount} тов.`, callback_data: `admin:category:${c.id}` }]);
+  return edit(chatId, messageId, categories.length ? "📁 <b>Категории</b>\n\nВыберите категорию для редактирования:" : "📁 Категорий пока нет.", kb([...rows, [{ text: "➕ Добавить категорию", callback_data: "admin:add_category" }], [{ text: "◀️ В админ-панель", callback_data: "admin:home" }]]));
+}
+
+async function showAdminCategory(chatId: number, messageId: number, categoryId: number) {
+  const category = await getCategory(categoryId);
+  if (!category) return edit(chatId, messageId, "Категория не найдена.", adminMenu());
+  const description = category.description ? `\n\n${escapeHtml(category.description)}` : "\n\nОписание не задано.";
+  const actions = category.isActive
+    ? [[{ text: "✏️ Переименовать", callback_data: `admin:category:rename:${categoryId}` }], [{ text: "📝 Изменить описание", callback_data: `admin:category:description:${categoryId}` }], [{ text: "🗑 Архивировать", callback_data: `admin:category:delete:${categoryId}` }]]
+    : [[{ text: "♻️ Восстановить", callback_data: `admin:category:restore:${categoryId}` }]];
+  return edit(chatId, messageId, `📁 <b>${escapeHtml(category.name)}</b>${description}`, kb([...actions, [{ text: "◀️ К категориям", callback_data: "admin:categories" }]]));
+}
 
 async function showCatalog(chatId: number, messageId?: number) {
   const categories = await listCategories();
@@ -73,9 +118,16 @@ async function handleCallback(update: NonNullable<Update["callback_query"]>) {
   if (data === "support") return edit(chatId, messageId, `📞 <b>Поддержка</b>\n\n${escapeHtml(process.env.SUPPORT_CONTACT || "Поддержка пока не настроена.")}`, mainMenu());
   if (!data.startsWith("admin:") || !isAdmin(actor.id)) return;
   if (data === "admin:home") return edit(chatId, messageId, "⚙️ <b>Админ-панель магазина</b>", adminMenu());
-  if (data === "admin:add_category") { states.set(actor.id, "category"); return send(chatId, "Введите название новой категории.\n/cancel — отмена"); }
-  if (data === "admin:add_product") { states.set(actor.id, "product"); return send(chatId, "Введите 4 строки:\nID категории\nНазвание товара\nЦена в рублях\nОписание\n/cancel — отмена"); }
-  if (data === "admin:add_keys") { states.set(actor.id, "keys"); return send(chatId, "Введите ID товара первой строкой, затем по одному ключу в строке.\n/cancel — отмена"); }
+  if (data === "admin:categories") return showAdminCategories(chatId, messageId);
+  if (data.startsWith("admin:category:rename:")) { const categoryId = Number(data.split(":").pop()); states.set(actor.id, { kind: "category_name", categoryId }); return send(chatId, "Введите новое название категории.\n/cancel — отмена"); }
+  if (data.startsWith("admin:category:description:")) { const categoryId = Number(data.split(":").pop()); states.set(actor.id, { kind: "category_description", categoryId }); return send(chatId, "Введите новое описание категории.\n/cancel — отмена"); }
+  if (data.startsWith("admin:category:delete:")) { const categoryId = Number(data.split(":").pop()); return edit(chatId, messageId, "Архивировать категорию? Товары и заказы сохранятся, но категория исчезнет из каталога.", kb([[{ text: "✅ Да, архивировать", callback_data: `admin:category:confirm_delete:${categoryId}` }], [{ text: "Отмена", callback_data: `admin:category:${categoryId}` }]])); }
+  if (data.startsWith("admin:category:confirm_delete:")) { const categoryId = Number(data.split(":").pop()); await setCategoryActive(categoryId, false); return showAdminCategories(chatId, messageId); }
+  if (data.startsWith("admin:category:restore:")) { const categoryId = Number(data.split(":").pop()); await setCategoryActive(categoryId, true); return showAdminCategories(chatId, messageId); }
+  if (data.startsWith("admin:category:")) return showAdminCategory(chatId, messageId, Number(data.split(":").pop()));
+  if (data === "admin:add_category") { states.set(actor.id, { kind: "category" }); return send(chatId, "Введите название новой категории.\n/cancel — отмена"); }
+  if (data === "admin:add_product") { states.set(actor.id, { kind: "product" }); return send(chatId, "Введите 4 строки:\nID категории\nНазвание товара\nЦена в рублях\nОписание\n/cancel — отмена"); }
+  if (data === "admin:add_keys") { states.set(actor.id, { kind: "keys" }); return send(chatId, "Отправьте ID товара и ключи текстом: первая строка — ID товара, остальные строки — ключи. Можно также прикрепить TXT/CSV-файл с первой строкой ID товара.\n/cancel — отмена"); }
   if (data === "admin:products") { const products = await getProductAdminList(); return edit(chatId, messageId, products.length ? `📦 <b>Товары</b>\n\n${products.map(p => `#${p.id} ${escapeHtml(p.name)} · ${money(p.priceCents)} · ${p.stock} шт.`).join("\n")}` : "Товаров пока нет.", adminMenu()); }
 }
 
@@ -84,9 +136,12 @@ async function handleMessage(message: NonNullable<Update["message"]>) {
   const user = await upsertUser(actor); if (user.isBlocked) return send(chatId, "Доступ ограничен.");
   if (text === "/cancel") { states.delete(actor.id); return send(chatId, "Действие отменено.", isAdmin(actor.id) ? adminMenu() : mainMenu()); }
   const state = states.get(actor.id);
-  if (state === "category" && isAdmin(actor.id)) { const id = await createCategory(text); states.delete(actor.id); return send(chatId, `✅ Категория создана: #${id}`, adminMenu()); }
-  if (state === "product" && isAdmin(actor.id)) { const lines = text.split(/\r?\n/).map(x => x.trim()); const price = Number(lines[2]?.replace(",", ".")); if (lines.length < 4 || !Number.isInteger(price * 100) || price <= 0) return send(chatId, "Нужно 4 строки, цена должна быть положительной."); const id = await createProduct({ categoryId: Number(lines[0]), name: lines[1], priceCents: Math.round(price * 100), description: lines.slice(3).join("\n") }); states.delete(actor.id); return send(chatId, `✅ Товар создан: #${id}`, adminMenu()); }
-  if (state === "keys" && isAdmin(actor.id)) { const lines = text.split(/\r?\n/).map(x => x.trim()).filter(Boolean); const productId = Number(lines.shift()); if (!productId || !lines.length) return send(chatId, "Укажите ID товара и хотя бы один ключ."); const added = await addInventory(productId, lines); states.delete(actor.id); return send(chatId, `✅ Добавлено ключей: ${added}`, adminMenu()); }
+  if (state?.kind === "category" && isAdmin(actor.id)) { const id = await createCategory(text); states.delete(actor.id); return send(chatId, `✅ Категория создана: #${id}`, adminMenu()); }
+  if (state?.kind === "category_name" && isAdmin(actor.id)) { if (!text) return send(chatId, "Название не может быть пустым."); await updateCategory(state.categoryId, { name: text, description: String((await getCategory(state.categoryId))?.description ?? "") }); states.delete(actor.id); return send(chatId, "✅ Категория переименована.", adminMenu()); }
+  if (state?.kind === "category_description" && isAdmin(actor.id)) { await updateCategory(state.categoryId, { name: String((await getCategory(state.categoryId))?.name ?? ""), description: text }); states.delete(actor.id); return send(chatId, "✅ Описание обновлено.", adminMenu()); }
+  if (state?.kind === "product" && isAdmin(actor.id)) { const lines = text.split(/\r?\n/).map(x => x.trim()); const price = Number(lines[2]?.replace(",", ".")); if (lines.length < 4 || !Number.isInteger(price * 100) || price <= 0) return send(chatId, "Нужно 4 строки, цена должна быть положительной."); const id = await createProduct({ categoryId: Number(lines[0]), name: lines[1], priceCents: Math.round(price * 100), description: lines.slice(3).join("\n") }); states.delete(actor.id); return send(chatId, `✅ Товар создан: #${id}`, adminMenu()); }
+  if (state?.kind === "keys" && isAdmin(actor.id) && text) return addKeysFromInput(actor, chatId, text, state.productId);
+  if (state?.kind === "keys" && isAdmin(actor.id) && message.document) { try { return addKeysFromInput(actor, chatId, await readTelegramDocument(message.document), state.productId); } catch (error) { return send(chatId, (error as Error).message === "FILE_TOO_LARGE" ? "Файл слишком большой. Максимум 2 МБ." : "Не удалось прочитать файл. Отправьте TXT или CSV в UTF-8."); } }
   if (text === "/start" || text === "/menu") return send(chatId, "🛍 <b>TRUM MARKET</b>\n\nЦифровые товары с автоматической выдачей.", mainMenu());
   if (text === "/catalog") return showCatalog(chatId);
   if (text === "/orders") { const orders = await listUserOrders(user.id); return send(chatId, orders.length ? `📦 <b>Мои покупки</b>\n\n${orders.map(o => `${o.publicId} · ${escapeHtml(o.productName)} · ${o.status === "DELIVERED" ? "✅ выдан" : o.status === "PENDING" ? "⏳ ожидает оплаты" : "❌ закрыт"}`).join("\n")}` : "📦 Покупок пока нет.", mainMenu()); }
