@@ -22,13 +22,15 @@ async function ensureColumn(tableName: string, columnName: string, definition: s
 }
 
 async function releaseExpiredReservationsWithConnection(connection: PoolConnection) {
-  const [rows] = await connection.query<DbRow[]>(`SELECT id, promo_code FROM shop_orders WHERE status='PENDING' AND reservation_expires_at IS NOT NULL AND reservation_expires_at<=CURRENT_TIMESTAMP FOR UPDATE`);
+  const expiry = "COALESCE(reservation_expires_at, DATE_ADD(created_at, INTERVAL 180 SECOND))";
+  const joinedExpiry = "COALESCE(o.reservation_expires_at, DATE_ADD(o.created_at, INTERVAL 180 SECOND))";
+  const [rows] = await connection.query<DbRow[]>(`SELECT id, promo_code FROM shop_orders WHERE status='PENDING' AND ${expiry}<=CURRENT_TIMESTAMP FOR UPDATE`);
   if (!rows.length) return 0;
-  await connection.query("UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.status='PENDING' AND o.reservation_expires_at<=CURRENT_TIMESTAMP AND i.status='RESERVED'");
+  await connection.query(`UPDATE shop_inventory i JOIN shop_orders o ON o.inventory_id=i.id SET i.status='AVAILABLE', i.order_id=NULL WHERE o.status='PENDING' AND ${joinedExpiry}<=CURRENT_TIMESTAMP AND i.status='RESERVED'`);
   for (const row of rows) {
     if (row.promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [row.promo_code]);
   }
-  await connection.query("UPDATE shop_orders SET status='CANCELLED' WHERE status='PENDING' AND reservation_expires_at<=CURRENT_TIMESTAMP");
+  await connection.query(`UPDATE shop_orders SET status='CANCELLED' WHERE status='PENDING' AND ${expiry}<=CURRENT_TIMESTAMP`);
   return rows.length;
 }
 
@@ -256,11 +258,48 @@ export async function restoreInventory(productId: number, values: string[]) {
   try {
     await connection.beginTransaction();
     for (const value of [...new Set(values.map(v => v.trim()).filter(Boolean))]) {
-      const [result] = await connection.execute<any>(`UPDATE shop_inventory SET status='AVAILABLE', order_id=NULL, sold_at=NULL WHERE product_id=? AND value=? AND status IN ('SOLD','DISABLED')`, [productId, value]);
+      const [items] = await connection.execute<DbRow[]>("SELECT id,status,order_id FROM shop_inventory WHERE product_id=? AND value=? FOR UPDATE", [productId, value]);
+      const item = items[0];
+      if (!item || !["SOLD", "DISABLED", "RESERVED"].includes(item.status)) continue;
+      if (item.status === "RESERVED" && item.order_id) {
+        const [orders] = await connection.execute<DbRow[]>("SELECT id,promo_code FROM shop_orders WHERE id=? AND status='PENDING' FOR UPDATE", [item.order_id]);
+        if (orders[0]) {
+          await connection.execute("UPDATE shop_orders SET status='CANCELLED' WHERE id=?", [orders[0].id]);
+          if (orders[0].promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [orders[0].promo_code]);
+        }
+      }
+      const [result] = await connection.execute<any>("UPDATE shop_inventory SET status='AVAILABLE', order_id=NULL, sold_at=NULL WHERE id=?", [item.id]);
       restored += Number(result.affectedRows || 0);
     }
     await connection.commit();
     return restored;
+  } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+}
+
+export async function deleteInventoryByValues(productId: number, values: string[]) {
+  await ensureStoreSchema();
+  let deleted = 0;
+  let protectedSold = 0;
+  const connection = await getStorePool().getConnection();
+  try {
+    await connection.beginTransaction();
+    for (const value of [...new Set(values.map(v => v.trim()).filter(Boolean))]) {
+      const [items] = await connection.execute<DbRow[]>("SELECT id,status,order_id FROM shop_inventory WHERE product_id=? AND value=? FOR UPDATE", [productId, value]);
+      const item = items[0];
+      if (!item) continue;
+      if (item.status === "SOLD") { protectedSold++; continue; }
+      if (item.status === "RESERVED" && item.order_id) {
+        const [orders] = await connection.execute<DbRow[]>("SELECT id,promo_code FROM shop_orders WHERE id=? AND status='PENDING' FOR UPDATE", [item.order_id]);
+        if (orders[0]) {
+          await connection.execute("UPDATE shop_orders SET status='CANCELLED' WHERE id=?", [orders[0].id]);
+          if (orders[0].promo_code) await connection.execute("UPDATE shop_promocodes SET uses_count=GREATEST(uses_count-1,0) WHERE code=?", [orders[0].promo_code]);
+        }
+      }
+      const [result] = await connection.execute<any>("DELETE FROM shop_inventory WHERE id=? AND status IN ('AVAILABLE','DISABLED','RESERVED')", [item.id]);
+      deleted += Number(result.affectedRows || 0);
+    }
+    await connection.commit();
+    return { deleted, protectedSold };
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
 }
 
