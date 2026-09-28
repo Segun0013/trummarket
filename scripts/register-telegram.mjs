@@ -33,9 +33,25 @@ await telegram("setMyCommands", {
     { command: "start", description: "Открыть магазин" },
     { command: "catalog", description: "Каталог товаров" },
     { command: "orders", description: "Мои покупки" },
-    { command: "admin", description: "Панель администратора" },
   ],
 });
+
+const adminIds = (process.env.ADMIN_IDS || "")
+  .split(",")
+  .map(value => value.trim())
+  .filter(value => /^\d+$/.test(value));
+
+for (const adminId of adminIds) {
+  await telegram("setMyCommands", {
+    scope: { type: "chat", chat_id: Number(adminId) },
+    commands: [
+      { command: "start", description: "Открыть магазин" },
+      { command: "catalog", description: "Каталог товаров" },
+      { command: "orders", description: "Мои покупки" },
+      { command: "admin", description: "Панель администратора" },
+    ],
+  });
+}
 
 await telegram("setWebhook", {
   url: webhookUrl,
