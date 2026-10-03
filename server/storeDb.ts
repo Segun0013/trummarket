@@ -404,9 +404,19 @@ export async function deliverPaidOrder(paymentId: string, amountCents: number, s
     if (Number(order.amount_cents) !== amountCents) throw new Error("AMOUNT_MISMATCH");
     await connection.execute("UPDATE shop_payments SET status=?, payload_json=payload_json WHERE payment_id=?", [status, paymentId]);
     if (status === "paid" && order.status === "CANCELLED") {
+      const [claimed] = await connection.execute<any>("UPDATE shop_inventory SET status='SOLD', sold_at=CURRENT_TIMESTAMP, order_id=? WHERE id=? AND status='AVAILABLE' AND order_id IS NULL", [order.id, order.inventory_id]);
+      if (claimed.affectedRows === 1) {
+        await connection.execute("UPDATE shop_orders SET status='DELIVERED', paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP), delivered_at=COALESCE(delivered_at,CURRENT_TIMESTAMP) WHERE id=? AND status='CANCELLED'", [order.id]);
+        await connection.commit();
+        return { action: "delivered", order };
+      }
       await connection.execute("UPDATE shop_orders SET status='FAILED' WHERE id=? AND status='CANCELLED'", [order.id]);
       await connection.commit();
       return { action: "late_paid", order };
+    }
+    if (status === "paid" && order.status === "DELIVERED") {
+      await connection.commit();
+      return { action: "delivered", order };
     }
     if (order.status !== "PENDING" || order.inventoryStatus !== "RESERVED") {
       await connection.commit();
@@ -421,7 +431,6 @@ export async function deliverPaidOrder(paymentId: string, amountCents: number, s
       await connection.commit();
       return { action: "ignored", order };
     }
-    if (order.status === "DELIVERED") { await connection.commit(); return { action: "already_delivered", order }; }
     await connection.execute("UPDATE shop_inventory SET status='SOLD', sold_at=CURRENT_TIMESTAMP WHERE id=? AND status='RESERVED'", [order.inventory_id]);
     await connection.execute("UPDATE shop_orders SET status='DELIVERED', paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP), delivered_at=COALESCE(delivered_at,CURRENT_TIMESTAMP) WHERE id=?", [order.id]);
     await connection.commit();
